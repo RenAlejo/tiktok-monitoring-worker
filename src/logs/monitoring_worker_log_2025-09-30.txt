@@ -1,0 +1,49 @@
+2025-09-30 12:34:02 - INFO - Monitoring Worker Logger initialized. Log file: logs\monitoring_worker_log_2025-09-30.txt
+2025-09-30 12:34:02 - INFO - Logger test successful
+2025-09-30 12:42:15 - INFO - Monitoring Worker Logger initialized. Log file: logs\monitoring_worker_log_2025-09-30.txt
+2025-09-30 12:42:16 - ERROR - Error initializing database: Attribute name 'metadata' is reserved when using the Declarative API.
+2025-09-30 12:42:49 - INFO - Monitoring Worker Logger initialized. Log file: logs\monitoring_worker_log_2025-09-30.txt
+2025-09-30 12:42:49 - ERROR - Error initializing database: (psycopg2.OperationalError) connection to server at "localhost" (::1), port 5432 failed: fe_sendauth: no password supplied
+
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+2025-09-30 12:51:59 - INFO - Monitoring Worker Logger initialized. Log file: logs\monitoring_worker_log_2025-09-30.txt
+2025-09-30 12:52:00 - INFO - Connected to Redis for monitoring worker test_worker_basic
+2025-09-30 12:52:02 - INFO - Worker test_worker_basic registered successfully
+2025-09-30 12:52:02 - INFO - Monitoring worker test_worker_basic services started
+2025-09-30 12:52:04 - INFO - Assigned monitoring for test_user to worker test_worker_basic
+2025-09-30 12:52:04 - INFO - User test_user already being monitored by another worker
+2025-09-30 12:52:07 - INFO - Worker test_worker_basic unregistered
+2025-09-30 12:52:07 - INFO - Monitoring worker test_worker_basic services stopped
+2025-09-30 12:52:08 - INFO - Connected to Redis for monitoring worker test_worker_comm
+2025-09-30 12:52:09 - INFO - Worker test_worker_comm registered successfully
+2025-09-30 12:52:09 - INFO - Monitoring worker test_worker_comm services started
+2025-09-30 12:52:09 - ERROR - Failed to send recording request: Object of type SubscriberType is not JSON serializable
+2025-09-30 12:52:30 - INFO - Monitoring Worker Logger initialized. Log file: logs\monitoring_worker_log_2025-09-30.txt
+2025-09-30 12:52:31 - INFO - Connected to Redis for monitoring worker test_worker_basic
+2025-09-30 12:52:33 - INFO - Worker test_worker_basic registered successfully
+2025-09-30 12:52:33 - INFO - Monitoring worker test_worker_basic services started
+2025-09-30 12:52:36 - INFO - User test_user already being monitored by another worker
+2025-09-30 12:52:37 - INFO - Connected to Redis for monitoring worker test_worker_comm
+2025-09-30 12:52:38 - INFO - Worker test_worker_comm registered successfully
+2025-09-30 12:52:38 - INFO - Monitoring worker test_worker_comm services started
+2025-09-30 12:52:39 - INFO - Sent recording request for test_user (room: 12345)
+2025-09-30 12:52:42 - INFO - Worker test_worker_comm unregistered
+2025-09-30 12:52:42 - INFO - Monitoring worker test_worker_comm services stopped
+2025-09-30 12:53:38 - INFO - Monitoring Worker Logger initialized. Log file: logs\monitoring_worker_log_2025-09-30.txt
+2025-09-30 12:53:39 - INFO - Connected to Redis for monitoring worker cleanup_worker
+2025-09-30 12:53:42 - INFO - Connected to Redis for monitoring worker test_worker_9274
+2025-09-30 12:54:49 - INFO - Monitoring Worker Logger initialized. Log file: logs\monitoring_worker_log_2025-09-30.txt
+2025-09-30 12:54:51 - INFO - Connected to Redis for monitoring worker cleanup_worker
+2025-09-30 12:54:53 - INFO - Connected to Redis for monitoring worker test_worker_4351
+2025-09-30 12:54:55 - INFO - Worker test_worker_4351 registered successfully
+2025-09-30 12:54:55 - INFO - Monitoring worker test_worker_4351 services started
+2025-09-30 12:54:57 - INFO - Assigned monitoring for test_user_9108 to worker test_worker_4351
+2025-09-30 12:54:57 - INFO - User test_user_9108 already being monitored by another worker
+2025-09-30 12:54:57 - INFO - Sent recording request for test_user_9108 (room: 12345678)
+2025-09-30 12:55:01 - INFO - Connected to Redis for monitoring worker test_worker2_9337
+2025-09-30 12:55:02 - INFO - Worker test_worker2_9337 registered successfully
+2025-09-30 12:55:02 - INFO - Monitoring worker test_worker2_9337 services started
+2025-09-30 12:55:07 - INFO - Worker test_worker_4351 unregistered
+2025-09-30 12:55:07 - INFO - Monitoring worker test_worker_4351 services stopped
+2025-09-30 12:55:09 - INFO - Worker test_worker2_9337 unregistered
+2025-09-30 12:55:09 - INFO - Monitoring worker test_worker2_9337 services stopped
