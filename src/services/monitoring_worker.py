@@ -39,6 +39,10 @@ class MonitoringWorker:
         self.is_running = False
         self.shutdown_event = threading.Event()
 
+        # In-memory room_id cache for reducing TikTok API calls
+        # Format: {username: (room_id, cached_timestamp)}
+        self._room_id_cache: Dict[str, tuple[str, float]] = {}
+
         # Statistics
         self.stats = {
             "total_monitoring_cycles": 0,
@@ -309,8 +313,9 @@ class MonitoringWorker:
             if is_live and room_id:
                 # User is live!
                 if not job.last_known_live_status:
-                    # Newly detected live
+                    # Newly detected live - invalidate cache to get fresh room_id next time
                     logger.info(f"LIVE DETECTED: {job.target_username} (room: {room_id})")
+                    self._invalidate_room_id_cache(job.target_username)
 
                     job.mark_live_detected(room_id)
 
@@ -340,7 +345,9 @@ class MonitoringWorker:
             else:
                 # User is not live
                 if job.last_known_live_status:
+                    # Live ended - invalidate cache to get fresh room_id next time
                     logger.info(f"LIVE ENDED: {job.target_username}")
+                    self._invalidate_room_id_cache(job.target_username)
                     job.mark_live_ended()
                     self.redis_service.store_monitoring_job(job)
 
@@ -357,26 +364,67 @@ class MonitoringWorker:
                 self.state.remove_job(job.target_username)
                 self.redis_service.remove_monitoring_job(job.target_username)
 
+    def _get_cached_room_id(self, username: str) -> Optional[str]:
+        """
+        Obtiene room_id del cache o lo obtiene de TikTok API si expiró
+        Cache TTL configurable via ROOM_ID_CACHE_TTL_MINUTES (default: 30 min)
+        """
+        cache_ttl_seconds = config.room_id_cache_ttl_minutes * 60
+
+        # Check if we have cached room_id
+        if username in self._room_id_cache:
+            room_id, cached_at = self._room_id_cache[username]
+            age_seconds = time.time() - cached_at
+
+            if age_seconds < cache_ttl_seconds:
+                logger.debug(f"✓ Using cached room_id for {username} (age: {int(age_seconds)}s / {config.room_id_cache_ttl_minutes}min)")
+                return room_id
+            else:
+                logger.info(f"⏰ Cache expired for {username} (age: {int(age_seconds)}s), fetching fresh room_id")
+
+        # Cache miss or expired - fetch from TikTok API
+        room_id = self.tiktok_api.get_room_id_from_user(username)
+
+        if room_id:
+            self._room_id_cache[username] = (room_id, time.time())
+            logger.info(f"💾 Cached room_id for {username}: {room_id} (TTL: {config.room_id_cache_ttl_minutes}min)")
+
+        return room_id
+
+    def _invalidate_room_id_cache(self, username: str):
+        """
+        Invalida el cache de room_id para un usuario
+        Útil cuando cambia el estado de live (offline→online o online→offline)
+        """
+        if username in self._room_id_cache:
+            del self._room_id_cache[username]
+            logger.debug(f"🗑️  Invalidated room_id cache for {username}")
+
     def _check_user_live_status(self, username: str) -> tuple[bool, Optional[str]]:
         """
         Verifica si un usuario está live
-        EXACTAMENTE la misma lógica que recording worker
+        Usa cache de room_id para reducir llamadas a TikTok API
         Returns: (is_live, room_id)
         """
         try:
-            # PASO 1: Obtener room_id
-            validation_room_id = self.tiktok_api.get_room_id_from_user(username)
+            logger.debug(f"🔍 Checking live status for {username}...")
+
+            # PASO 1: Obtener room_id (desde cache o API)
+            validation_room_id = self._get_cached_room_id(username)
 
             if not validation_room_id:
-                # No room_id = usuario no está live
+                logger.info(f"❌ No room_id found for {username} - User is OFFLINE")
                 return False, None
 
-            # PASO 2: Verificar si el room está realmente vivo
-            if not self.tiktok_api.is_room_alive(validation_room_id):
-                # Room existe pero no está vivo = usuario no está live
+            # PASO 2: Verificar si el room está realmente vivo (siempre verifica)
+            is_alive = self.tiktok_api.is_room_alive(validation_room_id)
+
+            if not is_alive:
+                logger.info(f"❌ Room {validation_room_id} is NOT alive - {username} is OFFLINE")
                 return False, None
 
             # Usuario REALMENTE está live
+            logger.info(f"✅ Room {validation_room_id} is ALIVE - {username} is LIVE")
             return True, validation_room_id
 
         except Exception as e:

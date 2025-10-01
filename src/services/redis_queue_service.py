@@ -340,67 +340,79 @@ class RedisQueueService:
             logger.error(f"Failed to remove monitoring job: {e}")
 
     def send_recording_request(self, request: RecordingRequest) -> bool:
-        """Envía solicitud de grabación a workers de grabación usando el MISMO formato que el bot"""
+        """
+        Envía UNA solicitud de grabación con TODOS los subscribers en metadata
+        (Similar al monolito: una grabación compartida por todos)
+        """
         try:
-            jobs_sent = 0
+            # Filtrar solo subscribers activos
+            active_subscribers = [sub for sub in request.subscribers if sub.is_active]
 
-            for subscriber in request.subscribers:
-                if not subscriber.is_active:
-                    continue
-
-                # Generate job_id (único por subscriber)
-                job_id = f"rec_{request.target_username}_{int(request.created_at)}_{subscriber.subscriber_id}"
-
-                # EXACT format as bot - ALL VALUES AS STRINGS
-                job_data = {
-                    "job_id": job_id,
-                    "job_type": "recording_request",
-                    "username": request.target_username,
-                    "user_id": str(subscriber.user_id),  # STRING
-                    "chat_id": str(subscriber.chat_id),  # STRING
-                    "language": subscriber.language,
-                    "mode": str(request.recording_mode),
-                    "priority": str(request.priority),  # STRING
-                    "created_at": str(request.created_at),  # STRING
-                    "assigned_worker": "",
-                    "status": "pending",
-                    "metadata": json.dumps({  # JSON STRING
-                        "room_id": request.room_id,
-                        "monitoring_job_id": request.monitoring_job_id,
-                        "monitoring_worker_id": request.monitoring_worker_id,
-                        "subscriber_type": subscriber.subscriber_type.value,
-                        "auto_triggered": True,
-                        "max_duration_minutes": request.max_duration_minutes
-                    })
-                }
-
-                # Use EXACT same keys as bot
-                job_key = f"job:{job_id}"  # Worker expects "job:{job_id}"
-                queue_key = f"job_queue:{request.priority}"
-
-                # Use pipeline like bot does (atomic operation)
-                pipe = self.redis_client.pipeline()
-
-                # 1. Store job data with hset (like bot)
-                pipe.hset(job_key, mapping=job_data)
-                pipe.expire(job_key, 3600)  # 1 hour TTL
-
-                # 2. Add to priority queue with zadd (NOT lpush!)
-                pipe.zadd(queue_key, {job_id: request.created_at})
-
-                # 3. Execute all operations atomically
-                pipe.execute()
-
-                jobs_sent += 1
-
-                logger.debug(f"Sent recording job {job_id} for {request.target_username} to subscriber {subscriber.subscriber_id}")
-
-            if jobs_sent > 0:
-                logger.info(f"Sent {jobs_sent} recording jobs for {request.target_username} (room: {request.room_id})")
-                return True
-            else:
+            if not active_subscribers:
                 logger.warning(f"No active subscribers found for recording request: {request.target_username}")
                 return False
+
+            # PRIMER subscriber es el usuario primario (quien inicia la grabación)
+            primary_subscriber = active_subscribers[0]
+
+            # DEMÁS subscribers van en metadata como additional_subscribers
+            additional_subscribers = [
+                {
+                    "user_id": str(sub.user_id),
+                    "chat_id": str(sub.chat_id),
+                    "language": sub.language,
+                    "subscriber_type": sub.subscriber_type.value
+                }
+                for sub in active_subscribers[1:]  # Skip first
+            ]
+
+            # Generate job_id para el usuario primario
+            job_id = f"rec_{request.target_username}_{int(request.created_at)}_{primary_subscriber.subscriber_id}"
+
+            # EXACT format as bot - ALL VALUES AS STRINGS
+            job_data = {
+                "job_id": job_id,
+                "job_type": "recording_request",
+                "username": request.target_username,
+                "user_id": str(primary_subscriber.user_id),  # STRING - usuario primario
+                "chat_id": str(primary_subscriber.chat_id),  # STRING - usuario primario
+                "language": primary_subscriber.language,
+                "mode": str(request.recording_mode),
+                "priority": str(request.priority),  # STRING
+                "created_at": str(request.created_at),  # STRING
+                "assigned_worker": "",
+                "status": "pending",
+                "metadata": json.dumps({  # JSON STRING
+                    "room_id": request.room_id,
+                    "monitoring_job_id": request.monitoring_job_id,
+                    "monitoring_worker_id": request.monitoring_worker_id,
+                    "subscriber_type": primary_subscriber.subscriber_type.value,
+                    "auto_triggered": True,
+                    "max_duration_minutes": request.max_duration_minutes,
+                    "additional_subscribers": additional_subscribers  # SUSCRIPTORES ADICIONALES
+                })
+            }
+
+            # Use EXACT same keys as bot
+            job_key = f"job:{job_id}"  # Worker expects "job:{job_id}"
+            queue_key = f"job_queue:{request.priority}"
+
+            # Use pipeline like bot does (atomic operation)
+            pipe = self.redis_client.pipeline()
+
+            # 1. Store job data with hset (like bot)
+            pipe.hset(job_key, mapping=job_data)
+            pipe.expire(job_key, 3600)  # 1 hour TTL
+
+            # 2. Add to priority queue with zadd (NOT lpush!)
+            pipe.zadd(queue_key, {job_id: request.created_at})
+
+            # 3. Execute all operations atomically
+            pipe.execute()
+
+            logger.info(f"Sent 1 recording job for {request.target_username} (room: {request.room_id}) with {len(active_subscribers)} total subscribers ({len(additional_subscribers)} additional)")
+
+            return True
 
         except Exception as e:
             logger.error(f"Failed to send recording request: {e}")

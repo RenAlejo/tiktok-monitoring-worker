@@ -200,15 +200,23 @@ class WorkerCommandHandler:
             # Add subscriber to existing job
             job.add_subscriber(subscriber)
 
+            # If job was PAUSED, RESUME it now that we have a subscriber
+            was_paused = job.status == MonitoringStatus.PAUSED
+            if was_paused:
+                job.status = MonitoringStatus.ACTIVE
+                logger.info(f"▶️  Monitoring RESUMED for {target_username} - new subscriber joined")
+
             # Update job in Redis
             self.worker.redis_service.store_monitoring_job(job)
 
             # Send notification back to bot
-            self._send_bot_notification("subscriber_added", {
+            notification_type = "monitoring_resumed" if was_paused else "subscriber_added"
+            self._send_bot_notification(notification_type, {
                 "username": target_username,
                 "subscriber_id": subscriber.subscriber_id,
                 "worker_id": self.worker.worker_id,
-                "total_subscribers": len(job.get_active_subscribers())
+                "total_subscribers": len(job.get_active_subscribers()),
+                "was_paused": was_paused
             })
 
             return {
@@ -253,19 +261,26 @@ class WorkerCommandHandler:
             # Remove subscriber
             job.remove_subscriber(subscriber_id, subscriber_type)
 
-            # If no active subscribers, remove entire job
+            # If no active subscribers, PAUSE job instead of deleting it
             if not job.has_active_subscribers():
-                self.worker.state.remove_job(target_username)
-                self.worker.redis_service.remove_monitoring_job(target_username)
+                # Set status to PAUSED - monitoring loop will skip this job
+                job.status = MonitoringStatus.PAUSED
 
-                self._send_bot_notification("monitoring_stopped", {
+                # Keep job in state but mark as paused
+                self.worker.redis_service.store_monitoring_job(job)
+
+                logger.info(f"⏸️  Monitoring PAUSED for {target_username} - no active subscribers (will skip TikTok API calls)")
+
+                self._send_bot_notification("monitoring_paused", {
                     "username": target_username,
                     "reason": "no_active_subscribers",
                     "worker_id": self.worker.worker_id
                 })
             else:
-                # Update job in Redis
+                # Still have active subscribers - just update
                 self.worker.redis_service.store_monitoring_job(job)
+
+                logger.info(f"Subscriber {subscriber_id} removed from {target_username}, {len(job.get_active_subscribers())} subscribers remaining")
 
                 self._send_bot_notification("subscriber_removed", {
                     "username": target_username,

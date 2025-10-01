@@ -51,7 +51,7 @@ class ProxyManager:
         self.rotation_lock = threading.Lock()
         self.test_timeout = config.http_connect_timeout
         self.max_error_count = 5
-        self.rotation_interval = 2400  # 40 minutos
+        self.rotation_interval = config.proxy_rotation_interval_minutes * 60  # Convert to seconds
         self.last_rotation = time.time()
 
         # Cargar proxies desde configuración
@@ -91,11 +91,26 @@ class ProxyManager:
             self.proxies.append(proxy)
 
     def get_current_proxy(self) -> Optional[ProxyInfo]:
-        """Obtiene el proxy actual"""
+        """Obtiene el proxy actual con rotación automática por tiempo"""
         if not self.proxies:
             return None
 
         with self.rotation_lock:
+            # Check if it's time to auto-rotate
+            current_time = time.time()
+            time_since_rotation = current_time - self.last_rotation
+
+            if time_since_rotation >= self.rotation_interval:
+                elapsed_minutes = time_since_rotation / 60
+                logger.info(f"⏰ Auto-rotating proxy after {elapsed_minutes:.1f} minutes")
+
+                # Rotate inline (already have lock, don't call _rotate_to_next)
+                old_index = self.current_proxy_index
+                self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
+                logger.info(f"🔄 Proxy rotated: #{old_index} → #{self.current_proxy_index} (total: {len(self.proxies)})")
+
+                self.last_rotation = current_time
+
             if self.current_proxy_index >= len(self.proxies):
                 self.current_proxy_index = 0
             return self.proxies[self.current_proxy_index]
@@ -112,11 +127,14 @@ class ProxyManager:
         if proxy.error_count >= self.max_error_count:
             proxy.status = ProxyStatus.BLOCKED
         self._rotate_to_next()
+        self.last_rotation = time.time()  # Reset timer after error rotation
 
     def _rotate_to_next(self):
-        """Rota al siguiente proxy"""
+        """Rota al siguiente proxy con logging"""
         with self.rotation_lock:
+            old_index = self.current_proxy_index
             self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
+            logger.info(f"🔄 Proxy rotated: #{old_index} → #{self.current_proxy_index} (total: {len(self.proxies)})")
 
     def format_proxy_for_requests(self, proxy: ProxyInfo) -> Dict[str, str]:
         """Formatea proxy para uso con requests"""

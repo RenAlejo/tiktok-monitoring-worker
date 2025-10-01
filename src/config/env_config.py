@@ -108,6 +108,14 @@ class EnvConfig:
         return self.get_bool("ENABLE_ROOM_ID_CACHE", True)
 
     @property
+    def room_id_cache_ttl_minutes(self) -> int:
+        return self.get_int("ROOM_ID_CACHE_TTL_MINUTES", 30)
+
+    @property
+    def proxy_rotation_interval_minutes(self) -> int:
+        return self.get_int("PROXY_ROTATION_INTERVAL_MINUTES", 5)
+
+    @property
     def enable_fallback_api(self) -> bool:
         return self.get_bool("ENABLE_FALLBACK_API", True)
 
