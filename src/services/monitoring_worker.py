@@ -7,6 +7,7 @@ import time
 import threading
 import signal
 import sys
+import json
 from typing import Dict, List, Optional, Set
 from utils.logger_manager import logger
 from config.env_config import config
@@ -15,6 +16,7 @@ from services.monitoring_models import (
     MonitoringJob, MonitoringState, MonitoringSubscriber, RecordingRequest,
     MonitoringJobType, MonitoringStatus, SubscriberType
 )
+from services.worker_command_handler import WorkerCommandHandler
 from core.tiktok_api import TikTokAPI
 
 class MonitoringWorker:
@@ -29,9 +31,11 @@ class MonitoringWorker:
         # Services
         self.redis_service = RedisQueueService(self.worker_id)
         self.tiktok_api = TikTokAPI()
+        self.command_handler = WorkerCommandHandler(self)
 
         # Threading
         self.monitoring_thread = None
+        self.command_listener_thread = None
         self.is_running = False
         self.shutdown_event = threading.Event()
 
@@ -72,6 +76,10 @@ class MonitoringWorker:
             self.monitoring_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
             self.monitoring_thread.start()
 
+            # Start command listener
+            self.command_listener_thread = threading.Thread(target=self._command_listener_loop, daemon=True)
+            self.command_listener_thread.start()
+
             # Update state
             self.state.update_heartbeat()
 
@@ -93,9 +101,12 @@ class MonitoringWorker:
         self.is_running = False
         self.shutdown_event.set()
 
-        # Wait for monitoring thread to finish
+        # Wait for threads to finish
         if self.monitoring_thread and self.monitoring_thread.is_alive():
             self.monitoring_thread.join(timeout=10)
+
+        if self.command_listener_thread and self.command_listener_thread.is_alive():
+            self.command_listener_thread.join(timeout=5)
 
         # Stop Redis services
         self.redis_service.stop_worker_services()
@@ -241,9 +252,47 @@ class MonitoringWorker:
 
         logger.info("Monitoring loop ended")
 
+    def _command_listener_loop(self):
+        """Loop para escuchar comandos desde el bot"""
+        logger.info("Starting command listener loop")
+
+        while self.is_running and not self.shutdown_event.is_set():
+            try:
+                # Listen for commands from Redis pub/sub
+                message = self.redis_service.pubsub.get_message(timeout=1)
+
+                if message and message['type'] == 'message':
+                    self._process_command_message(message)
+
+            except Exception as e:
+                logger.error(f"Error in command listener loop: {e}")
+                self.shutdown_event.wait(timeout=1)
+
+        logger.info("Command listener loop ended")
+
+    def _process_command_message(self, message):
+        """Procesa mensaje de comando recibido"""
+        try:
+            # Parse command data
+            command_data = json.loads(message['data'])
+
+            # Process command through handler
+            response = self.command_handler.handle_command(command_data)
+
+            # Send response if needed (for now just log)
+            if response:
+                logger.debug(f"Command processed: {command_data.get('type')} -> {response.get('success', False)}")
+
+        except Exception as e:
+            logger.error(f"Error processing command message: {e}")
+
     def _process_monitoring_job(self, job: MonitoringJob):
         """Procesa un trabajo de monitoreo individual"""
         try:
+            # SKIP paused jobs (waiting for recording to complete)
+            if job.status == MonitoringStatus.PAUSED:
+                return
+
             current_time = time.time()
 
             # Check if it's time to check this job
@@ -261,12 +310,23 @@ class MonitoringWorker:
                 # User is live!
                 if not job.last_known_live_status:
                     # Newly detected live
-                    logger.info(f"🔴 LIVE DETECTED: {job.target_username} (room: {room_id})")
+                    logger.info(f"LIVE DETECTED: {job.target_username} (room: {room_id})")
 
                     job.mark_live_detected(room_id)
 
+                    # Send live detection notification to bot
+                    self.command_handler.send_live_detection_notification(
+                        job.target_username,
+                        room_id,
+                        job.get_active_subscribers()
+                    )
+
                     # Send recording request
                     self._send_recording_request(job, room_id)
+
+                    # PAUSE monitoring while recording is in progress
+                    job.status = MonitoringStatus.PAUSED
+                    logger.info(f"⏸️  Monitoring PAUSED for {job.target_username} - recording in progress")
 
                     # Update statistics
                     self.stats["total_live_detections"] += 1
@@ -280,7 +340,7 @@ class MonitoringWorker:
             else:
                 # User is not live
                 if job.last_known_live_status:
-                    logger.info(f"🔵 LIVE ENDED: {job.target_username}")
+                    logger.info(f"LIVE ENDED: {job.target_username}")
                     job.mark_live_ended()
                     self.redis_service.store_monitoring_job(job)
 
@@ -300,17 +360,24 @@ class MonitoringWorker:
     def _check_user_live_status(self, username: str) -> tuple[bool, Optional[str]]:
         """
         Verifica si un usuario está live
+        EXACTAMENTE la misma lógica que recording worker
         Returns: (is_live, room_id)
         """
         try:
-            room_id = self.tiktok_api.get_room_id_from_user(username)
+            # PASO 1: Obtener room_id
+            validation_room_id = self.tiktok_api.get_room_id_from_user(username)
 
-            if room_id:
-                # User is live
-                return True, room_id
-            else:
-                # User is not live
+            if not validation_room_id:
+                # No room_id = usuario no está live
                 return False, None
+
+            # PASO 2: Verificar si el room está realmente vivo
+            if not self.tiktok_api.is_room_alive(validation_room_id):
+                # Room existe pero no está vivo = usuario no está live
+                return False, None
+
+            # Usuario REALMENTE está live
+            return True, validation_room_id
 
         except Exception as e:
             logger.error(f"Error checking live status for {username}: {e}")
@@ -333,9 +400,25 @@ class MonitoringWorker:
 
             if success:
                 job.status = MonitoringStatus.RECORDING_TRIGGERED
-                logger.info(f"📹 Recording request sent for {job.target_username}")
+                logger.info(f"Recording request sent for {job.target_username}")
+
+                # Send recording status notification
+                self.command_handler.send_recording_status_notification(
+                    job.target_username,
+                    "recording_started",
+                    job.get_active_subscribers(),
+                    {"room_id": room_id, "request_id": request.request_id}
+                )
             else:
                 logger.error(f"Failed to send recording request for {job.target_username}")
+
+                # Send failure notification
+                self.command_handler.send_recording_status_notification(
+                    job.target_username,
+                    "recording_failed",
+                    job.get_active_subscribers(),
+                    {"room_id": room_id, "error": "Failed to queue recording request"}
+                )
 
         except Exception as e:
             logger.error(f"Error sending recording request for {job.target_username}: {e}")

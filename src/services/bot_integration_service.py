@@ -334,18 +334,18 @@ class BotIntegrationService:
 
     def _find_best_monitoring_worker(self) -> Optional[Dict]:
         """
-        Encuentra el mejor worker para asignar un nuevo monitoreo
+        Encuentra el mejor worker para asignar un nuevo monitoreo usando algoritmo de balanceado avanzado
         """
         try:
             active_workers = self.redis_service.get_active_monitoring_workers()
 
             if not active_workers:
+                logger.warning("No active monitoring workers available")
                 return None
 
-            # Find worker with lowest load percentage
-            best_worker = None
-            lowest_load = float('inf')
+            available_workers = []
 
+            # Filter available workers and calculate metrics
             for worker in active_workers:
                 current_jobs = int(worker.get('current_jobs', 0))
                 max_jobs = int(worker.get('max_concurrent_jobs', 1))
@@ -354,11 +354,38 @@ class BotIntegrationService:
                 if current_jobs >= max_jobs:
                     continue
 
+                # Calculate load metrics
                 load_percentage = (current_jobs / max_jobs) * 100
+                capacity_remaining = max_jobs - current_jobs
+                uptime = time.time() - float(worker.get('started_at', time.time()))
 
-                if load_percentage < lowest_load:
-                    lowest_load = load_percentage
-                    best_worker = worker
+                # Calculate worker health score (higher is better)
+                health_score = 100 - load_percentage  # Base score from available capacity
+                health_score += min(uptime / 3600, 24) * 2  # Bonus for uptime (max 48 points for 24h+)
+                health_score += capacity_remaining * 5  # Bonus for remaining capacity
+
+                available_workers.append({
+                    'worker': worker,
+                    'load_percentage': load_percentage,
+                    'capacity_remaining': capacity_remaining,
+                    'health_score': health_score,
+                    'uptime': uptime
+                })
+
+            if not available_workers:
+                logger.warning("All monitoring workers are at capacity")
+                return None
+
+            # Sort by health score (descending) then by load percentage (ascending)
+            available_workers.sort(key=lambda w: (-w['health_score'], w['load_percentage']))
+
+            best_worker_info = available_workers[0]
+            best_worker = best_worker_info['worker']
+
+            logger.info(f"Selected worker {best_worker['worker_id']} "
+                       f"(load: {best_worker_info['load_percentage']:.1f}%, "
+                       f"health: {best_worker_info['health_score']:.1f}, "
+                       f"capacity: {best_worker_info['capacity_remaining']})")
 
             return best_worker
 
@@ -437,4 +464,107 @@ class BotIntegrationService:
             "pending_requests": len(self.pending_requests),
             "notification_callbacks": len(self.notification_callbacks),
             "listener_active": self.listener_thread.is_alive() if self.listener_thread else False
+        }
+
+    def get_load_balancing_stats(self) -> Dict:
+        """
+        Obtiene estadísticas del sistema de balanceado de carga
+        """
+        try:
+            active_workers = self.redis_service.get_active_monitoring_workers()
+
+            if not active_workers:
+                return {
+                    "total_workers": 0,
+                    "available_workers": 0,
+                    "system_capacity": 0,
+                    "system_load": 0,
+                    "recommendations": ["No workers available"]
+                }
+
+            total_capacity = 0
+            total_jobs = 0
+            available_workers = 0
+            worker_stats = []
+
+            for worker in active_workers:
+                current_jobs = int(worker.get('current_jobs', 0))
+                max_jobs = int(worker.get('max_concurrent_jobs', 1))
+
+                total_capacity += max_jobs
+                total_jobs += current_jobs
+
+                if current_jobs < max_jobs:
+                    available_workers += 1
+
+                load_percentage = (current_jobs / max_jobs) * 100
+                worker_stats.append({
+                    "worker_id": worker.get('worker_id'),
+                    "load_percentage": load_percentage,
+                    "jobs": f"{current_jobs}/{max_jobs}",
+                    "capacity_remaining": max_jobs - current_jobs
+                })
+
+            system_load = (total_jobs / total_capacity * 100) if total_capacity > 0 else 0
+
+            # Generate recommendations
+            recommendations = []
+            if system_load > 90:
+                recommendations.append("System load critical - consider adding more workers")
+            elif system_load > 75:
+                recommendations.append("System load high - monitor closely")
+            elif available_workers == 0:
+                recommendations.append("All workers at capacity")
+            else:
+                recommendations.append("System load normal")
+
+            if len(active_workers) < 2:
+                recommendations.append("Consider running multiple workers for redundancy")
+
+            return {
+                "total_workers": len(active_workers),
+                "available_workers": available_workers,
+                "system_capacity": total_capacity,
+                "system_load": system_load,
+                "total_jobs": total_jobs,
+                "worker_details": worker_stats,
+                "recommendations": recommendations,
+                "load_distribution": self._calculate_load_distribution(worker_stats)
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting load balancing stats: {e}")
+            return {"error": str(e)}
+
+    def _calculate_load_distribution(self, worker_stats: List[Dict]) -> Dict:
+        """
+        Calcula la distribución de carga entre workers
+        """
+        if not worker_stats:
+            return {"balance_score": 0, "description": "No workers"}
+
+        loads = [w["load_percentage"] for w in worker_stats]
+        avg_load = sum(loads) / len(loads)
+
+        # Calculate standard deviation for balance score
+        variance = sum((load - avg_load) ** 2 for load in loads) / len(loads)
+        std_deviation = variance ** 0.5
+
+        # Balance score: 100 = perfectly balanced, 0 = completely imbalanced
+        balance_score = max(0, 100 - std_deviation * 2)
+
+        if balance_score > 90:
+            description = "Excellent load distribution"
+        elif balance_score > 70:
+            description = "Good load distribution"
+        elif balance_score > 50:
+            description = "Fair load distribution"
+        else:
+            description = "Poor load distribution - rebalancing needed"
+
+        return {
+            "balance_score": round(balance_score, 1),
+            "description": description,
+            "average_load": round(avg_load, 1),
+            "load_variance": round(std_deviation, 1)
         }

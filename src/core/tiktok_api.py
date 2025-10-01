@@ -11,7 +11,7 @@ from utils.logger_manager import logger
 from utils.custom_exceptions import (
     UserLiveException, TikTokException, LiveNotFound, IPBlockedByWAF, TikTokLiveRateLimitException
 )
-from database.room_cache_service import RoomCacheService
+# from database.room_cache_service import RoomCacheService  # Disabled: monitoring worker doesn't need DB cache
 from core.tiktok_live_fallback import TikTokLiveFallback
 from utils.utils import read_tiktok_live_config
 from utils.user_cache import UserCache
@@ -29,8 +29,8 @@ class TikTokAPI:
         # Cliente HTTP con proxy para API calls
         self.http_client = TikTokHttpClient(cookies=cookies)
 
-        # Cache persistente en PostgreSQL
-        self.db_cache = RoomCacheService()
+        # Cache persistente en PostgreSQL - DISABLED for monitoring worker
+        # self.db_cache = RoomCacheService()
 
         # Cache de usuarios para evitar requests innecesarios
         self.user_cache = UserCache()
@@ -113,20 +113,20 @@ class TikTokAPI:
         return None
 
     def _cache_room_id(self, username: str, room_id: str):
-        """Guarda room_id en cache y/o base de datos según configuración"""
+        """Guarda room_id en cache (solo en memoria para monitoring worker)"""
         current_time = time.time()
 
         # Solo procesar si el room_id no está vacío
         if room_id and room_id.strip():
-            # SIEMPRE registrar en PostgreSQL como log histórico
-            self.db_cache.cache_room_id(username, room_id, is_live=True)
+            # Monitoring worker: Solo cache en memoria, NO en DB
+            # self.db_cache.cache_room_id(username, room_id, is_live=True)  # DISABLED
 
             # Cache en memoria solo si está habilitado
             if config.enable_room_id_cache:
                 self.room_id_cache[username] = (room_id, current_time)
-                logger.info(f"Cached valid room_id for {username}: {room_id} (TTL: 3 hours)")
+                logger.debug(f"Cached room_id in memory for {username}: {room_id}")
             else:
-                logger.info(f"Logged room_id for {username}: {room_id} (cache disabled, DB log only)")
+                logger.debug(f"Room_id for {username}: {room_id} (memory cache disabled)")
         else:
             # No cachear valores vacíos, pero limpiar cache existente si existe
             logger.warning(f"Refusing to cache empty room_id for {username}")

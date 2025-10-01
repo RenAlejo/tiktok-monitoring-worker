@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Callable, Any
 from dataclasses import asdict
 from utils.logger_manager import logger
 from services.redis_queue_service import RedisQueueService
-from services.monitoring_models import RecordingRequest, MonitoringSubscriber
+from services.monitoring_models import RecordingRequest, MonitoringSubscriber, MonitoringStatus
 
 class WorkerCommunicationService:
     """
@@ -211,16 +211,29 @@ class WorkerCommunicationService:
     # Default message handlers
 
     def _handle_recording_completed(self, payload: Dict):
-        """Handler para grabación completada"""
+        """Handler para grabación completada - Resume monitoring"""
         try:
-            request_id = payload.get("request_id")
             username = payload.get("username")
-            file_path = payload.get("file_path")
+            job_id = payload.get("job_id")
+            worker_id = payload.get("worker_id")
 
-            logger.info(f"📹 Recording completed for {username}: {file_path}")
+            logger.info(f"📹 Recording completed for {username} (by {worker_id})")
 
-            # TODO: Notify subscribers about completion
-            # This would involve sending notifications back to the bot
+            # Resume monitoring for this user
+            job = self.worker.state.get_job(username)
+
+            if job:
+                # Change status from PAUSED to ACTIVE to resume monitoring
+                job.status = MonitoringStatus.ACTIVE
+                job.last_known_live_status = False  # Reset to detect next live
+                job.last_live_room_id = None
+
+                # Store updated job in Redis
+                self.worker.redis_service.store_monitoring_job(job)
+
+                logger.info(f"▶️  Monitoring RESUMED for {username} after recording completion")
+            else:
+                logger.warning(f"No monitoring job found for {username}, cannot resume")
 
         except Exception as e:
             logger.error(f"Error handling recording completion: {e}")

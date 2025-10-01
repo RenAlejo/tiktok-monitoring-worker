@@ -6,7 +6,7 @@ import json
 import time
 from typing import Dict, Optional
 from utils.logger_manager import logger
-from services.monitoring_models import MonitoringSubscriber, SubscriberType
+from services.monitoring_models import MonitoringSubscriber, SubscriberType, MonitoringStatus
 
 class WorkerCommandHandler:
     """
@@ -21,7 +21,9 @@ class WorkerCommandHandler:
             "add_subscriber": self._handle_add_subscriber,
             "remove_subscriber": self._handle_remove_subscriber,
             "get_status": self._handle_get_status,
-            "ping": self._handle_ping
+            "ping": self._handle_ping,
+            "recording_completed": self._handle_recording_completed,
+            "recording_failed": self._handle_recording_failed
         }
 
     def handle_command(self, command_data: Dict) -> Optional[Dict]:
@@ -416,3 +418,108 @@ class WorkerCommandHandler:
 
         except Exception as e:
             logger.error(f"Error sending recording status notification: {e}")
+
+    def _handle_recording_completed(self, command_data: Dict) -> Dict:
+        """
+        Maneja notificación de grabación completada desde recording worker
+        Resume el monitoreo que estaba pausado
+        """
+        try:
+            username = command_data.get("username")
+            job_id = command_data.get("job_id")
+            worker_id = command_data.get("worker_id")
+
+            if not username:
+                return {
+                    "success": False,
+                    "error": "Missing username"
+                }
+
+            logger.info(f"📹 Recording completed for {username} (by {worker_id})")
+
+            # Buscar job de monitoreo
+            job = self.worker.state.get_job(username)
+
+            if job:
+                # Reanudar monitoreo: cambiar de PAUSED a ACTIVE
+                job.status = MonitoringStatus.ACTIVE
+                job.last_known_live_status = False  # Reset para detectar siguiente live
+                job.last_live_room_id = None
+
+                # Guardar en Redis
+                self.worker.redis_service.store_monitoring_job(job)
+
+                logger.info(f"▶️  Monitoring RESUMED for {username} after recording completion")
+
+                return {
+                    "success": True,
+                    "message": f"Monitoring resumed for {username}",
+                    "username": username,
+                    "status": "active"
+                }
+            else:
+                logger.warning(f"No monitoring job found for {username}, cannot resume")
+                return {
+                    "success": False,
+                    "error": f"No monitoring job found for {username}"
+                }
+
+        except Exception as e:
+            logger.error(f"Error handling recording completion: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def _handle_recording_failed(self, command_data: Dict) -> Dict:
+        """
+        Maneja notificación de grabación fallida desde recording worker
+        Resume el monitoreo que estaba pausado
+        """
+        try:
+            username = command_data.get("username")
+            job_id = command_data.get("job_id")
+            worker_id = command_data.get("worker_id")
+            error = command_data.get("error", "Unknown error")
+
+            if not username:
+                return {
+                    "success": False,
+                    "error": "Missing username"
+                }
+
+            logger.warning(f"❌ Recording failed for {username} (by {worker_id}): {error}")
+
+            # Buscar job de monitoreo
+            job = self.worker.state.get_job(username)
+
+            if job:
+                # Reanudar monitoreo: cambiar de PAUSED a ACTIVE
+                job.status = MonitoringStatus.ACTIVE
+                job.last_known_live_status = False  # Reset para detectar siguiente live
+                job.last_live_room_id = None
+
+                # Guardar en Redis
+                self.worker.redis_service.store_monitoring_job(job)
+
+                logger.info(f"▶️  Monitoring RESUMED for {username} after recording failure")
+
+                return {
+                    "success": True,
+                    "message": f"Monitoring resumed for {username} after failure",
+                    "username": username,
+                    "status": "active"
+                }
+            else:
+                logger.warning(f"No monitoring job found for {username}, cannot resume")
+                return {
+                    "success": False,
+                    "error": f"No monitoring job found for {username}"
+                }
+
+        except Exception as e:
+            logger.error(f"Error handling recording failure: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }

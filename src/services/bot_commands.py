@@ -250,12 +250,30 @@ class BotCommands:
         Añade suscriptor a monitoreo existente
         """
         try:
-            # Check if user is already subscribed
-            # This would require checking existing subscribers
-            # For now, assume we can add the subscriber
-
             assigned_worker = current_status.get("assigned_worker")
 
+            # Check if user is already subscribed by querying the worker
+            status_command = {
+                "type": "get_status",
+                "request_id": f"check_status_{username}_{user_id}_{int(time.time())}",
+                "target_username": username,
+                "timestamp": time.time()
+            }
+
+            # Send status query to check current subscribers
+            status_sent = self.integration._send_worker_command(assigned_worker, status_command)
+
+            if not status_sent:
+                return {
+                    "success": False,
+                    "error": "Failed to query existing subscribers",
+                    "error_type": "worker_error"
+                }
+
+            # Wait briefly for potential status response (in real implementation, this would be async)
+            time.sleep(0.5)
+
+            # For now, proceed with adding subscriber (duplicate checking would be handled by worker)
             if assigned_worker:
                 # Send command to add subscriber
                 command = {
@@ -318,16 +336,25 @@ class BotCommands:
                 status = status_data["status"]
 
                 if status.get("is_monitored"):
-                    live_status = "🔴 LIVE" if status.get("last_known_live_status") else "🔵 Offline"
+                    live_status = "LIVE" if status.get("last_known_live_status") else "Offline"
                     checks = status.get("total_checks", 0)
                     detections = status.get("live_detections", 0)
                     worker = status.get("assigned_worker", "unknown")
+                    subscribers = status.get("subscribers_count", 0)
 
-                    return (f"📊 Status for @{username}:\n"
-                           f"Status: {live_status}\n"
-                           f"Worker: {worker}\n"
-                           f"Checks: {checks}\n"
-                           f"Live detections: {detections}")
+                    message = f"Status for @{username}:\n"
+                    message += f"Status: {live_status}\n"
+                    message += f"Worker: {worker}\n"
+                    message += f"Subscribers: {subscribers}\n"
+                    message += f"Checks: {checks}\n"
+                    message += f"Live detections: {detections}"
+
+                    if status.get("last_check_at"):
+                        import datetime
+                        last_check = datetime.datetime.fromtimestamp(status["last_check_at"])
+                        message += f"\nLast check: {last_check.strftime('%Y-%m-%d %H:%M:%S')}"
+
+                    return message
                 else:
                     return f"@{username} is not being monitored"
 
@@ -336,10 +363,23 @@ class BotCommands:
                 system = status_data["system_status"]
                 workers = system.get("workers", {})
 
-                return (f"🖥️ System Status:\n"
-                       f"Active workers: {workers.get('total_active', 0)}\n"
-                       f"Total jobs: {workers.get('total_jobs', 0)}\n"
-                       f"System load: {workers.get('system_load_percentage', 0):.1f}%")
+                message = "System Status:\n"
+                message += f"Active workers: {workers.get('total_active', 0)}\n"
+                message += f"Total jobs: {workers.get('total_jobs', 0)}\n"
+                message += f"System load: {workers.get('system_load_percentage', 0):.1f}%"
+
+                # Add individual worker details if available
+                worker_details = workers.get("details", [])
+                if worker_details:
+                    message += "\n\nWorker Details:"
+                    for worker in worker_details[:5]:  # Show max 5 workers
+                        worker_id = worker.get("worker_id", "unknown")
+                        current_jobs = worker.get("current_jobs", 0)
+                        max_jobs = worker.get("max_jobs", 0)
+                        load = worker.get("load_percentage", 0)
+                        message += f"\n- {worker_id}: {current_jobs}/{max_jobs} jobs ({load:.1f}%)"
+
+                return message
 
             else:
                 return "Status information available"
@@ -356,10 +396,21 @@ class BotCommands:
             username = result_data.get("username", "")
             is_new = result_data.get("is_new_monitoring", True)
 
+            assigned_worker = result_data.get("assigned_worker", "")
+
             if is_new:
-                return f"✅ Started monitoring @{username}\nYou'll be notified when they go live!"
+                message = f"Started monitoring @{username}\n"
+                message += "You'll be notified when they go live!"
+                if assigned_worker:
+                    message += f"\nAssigned to worker: {assigned_worker}"
             else:
-                return f"✅ Added to existing monitoring for @{username}\nYou'll be notified when they go live!"
+                message = f"Added to existing monitoring for @{username}\n"
+                message += "You'll be notified when they go live!"
+                status = result_data.get("status", "")
+                if status:
+                    message += f"\nCurrent status: {status}"
+
+            return message
 
         except Exception as e:
             logger.error(f"Error formatting success message: {e}")
@@ -374,14 +425,14 @@ class BotCommands:
             error_msg = error_data.get("error", "Unknown error")
 
             if error_type == "validation":
-                return f"❌ Invalid username: {error_msg}"
+                return f"Invalid username: {error_msg}"
             elif error_type == "not_monitored":
-                return f"❌ {error_msg}"
+                return f"{error_msg}"
             elif error_type == "worker_error":
-                return f"⚠️ Worker error: {error_msg}"
+                return f"Worker error: {error_msg}"
             else:
-                return f"❌ Error: {error_msg}"
+                return f"Error: {error_msg}"
 
         except Exception as e:
             logger.error(f"Error formatting error message: {e}")
-            return "❌ An error occurred"
+            return "An error occurred"
