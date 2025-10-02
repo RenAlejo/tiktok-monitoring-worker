@@ -1,0 +1,7 @@
+src/.env
+*.pyc
+src/core/__pycache__/tiktok_api.cpython-311.pyc
+/src/logs
+/src/services/__pycache__
+src/proxies.csv
+src/proxiessock5.csv

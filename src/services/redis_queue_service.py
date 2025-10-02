@@ -189,6 +189,20 @@ class RedisQueueService:
             # Extend worker key expiry
             self.redis_client.expire(self.WORKER_KEY, config.worker_heartbeat_timeout_seconds * 2)
 
+            
+            # RENOVAR ASSIGNMENTS: Refrescar TTL de assignments para deteccion de workers caidos
+            job_usernames = self.redis_client.smembers(self.MONITORING_JOBS_KEY)
+            if job_usernames:
+                with self.redis_client.pipeline() as pipe:
+                    for username in job_usernames:
+                        assignment_key = f"monitoring_assignment:{username}"
+                        # Renovar solo si sigue asignado a este worker
+                        current_owner = self.redis_client.get(assignment_key)
+                        if current_owner == self.worker_id:
+                            # Setear TTL corto para deteccion rapida de caida
+                            pipe.expire(assignment_key, config.worker_heartbeat_timeout_seconds * 2)
+                    pipe.execute()
+
         except Exception as e:
             logger.error(f"Failed to send heartbeat: {e}")
 
@@ -244,6 +258,41 @@ class RedisQueueService:
             logger.error(f"Failed to check user monitoring: {e}")
             return None
 
+    def check_active_recording(self, username: str) -> bool:
+        """
+        Verifica si existe una grabación activa para el usuario
+
+        Busca claves recording:{username}:* con status=active
+        Usado durante recovery para decidir si reactivar jobs PAUSED
+
+        Args:
+            username: TikTok username a verificar
+
+        Returns:
+            True si existe grabación activa, False si no
+        """
+        try:
+            # Buscar todas las claves de grabación para este usuario
+            recording_keys = self.redis_client.keys(f"recording:{username}:*")
+
+            if not recording_keys:
+                return False
+
+            # Verificar si alguna grabación está activa
+            for key in recording_keys:
+                status = self.redis_client.hget(key, "status")
+                if status == "active":
+                    logger.debug(f"Found active recording for {username}: {key}")
+                    return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Error checking active recording for {username}: {e}")
+            # Fail-safe: asumir que hay grabación activa en caso de error
+            # Esto previene duplicar grabaciones si hay problemas de conexión
+            return True
+
     def assign_monitoring_job(self, username: str) -> bool:
         """
         Asigna el monitoreo de un usuario a este worker
@@ -253,12 +302,11 @@ class RedisQueueService:
             # Use Redis SET with NX (only if not exists) for atomic assignment
             assignment_key = f"monitoring_assignment:{username}"
 
-            # Set assignment with expiry (24 hours by default)
-            expiry_seconds = config.user_monitoring_timeout_hours * 3600
+            # Set assignment without expiry - monitoreo 24/7/365
+            # Expiry se maneja via heartbeat renewal (deteccion de workers caidos)
             success = self.redis_client.set(
                 assignment_key,
                 self.worker_id,
-                ex=expiry_seconds,
                 nx=True  # Only set if key doesn't exist
             )
 
@@ -314,8 +362,6 @@ class RedisQueueService:
             })
 
             # Set expiry
-            self.redis_client.expire(job_key, config.user_monitoring_timeout_hours * 3600)
-
             # Add to worker's job list
             self.redis_client.sadd(self.MONITORING_JOBS_KEY, job.target_username)
 
@@ -338,6 +384,135 @@ class RedisQueueService:
 
         except Exception as e:
             logger.error(f"Failed to remove monitoring job: {e}")
+
+
+    def recover_worker_jobs(self) -> List[MonitoringJob]:
+        """
+        Recupera todos los jobs asignados a este worker desde Redis
+        Se llama al iniciar el worker para restaurar estado tras reinicio
+
+        Implementa self-healing: reconstruye el set monitoring_jobs:{worker_id}
+        desde el hash global monitoring_assignments para recuperar jobs legacy
+        creados antes de la implementación del recovery system.
+
+        Returns:
+            Lista de MonitoringJobs recuperados
+        """
+        try:
+            logger.info(f"🔄 Starting job recovery for worker {self.worker_id}")
+
+            # PASO 1: SELF-HEALING - Reconstruir set desde monitoring_assignments
+            # Esto permite recuperar jobs legacy que no fueron agregados al set
+            logger.info(f"🔍 Scanning monitoring_assignments for jobs assigned to {self.worker_id}")
+
+            all_assignments = self.redis_client.hgetall(self.MONITORING_ASSIGNMENT_KEY)
+            reconstructed_count = 0
+
+            for username, assigned_worker in all_assignments.items():
+                if assigned_worker == self.worker_id:
+                    # Verificar que existe el job hash
+                    job_key = f"monitoring_job:{username}"
+                    if self.redis_client.exists(job_key):
+                        # Reconstruir el set (idempotente - no duplica si ya existe)
+                        self.redis_client.sadd(self.MONITORING_JOBS_KEY, username)
+                        reconstructed_count += 1
+                    else:
+                        # Limpiar assignment huérfano (job no existe)
+                        logger.warning(f"⚠️ Assignment found for {username} but job data missing, cleaning up")
+                        self.redis_client.hdel(self.MONITORING_ASSIGNMENT_KEY, username)
+
+            if reconstructed_count > 0:
+                logger.info(f"🔧 Self-healing: Reconstructed {reconstructed_count} jobs from assignments")
+
+            # PASO 2: Obtener lista completa de usernames (set reconstruido)
+            job_usernames = self.redis_client.smembers(self.MONITORING_JOBS_KEY)
+
+            if not job_usernames:
+                logger.info(f"No jobs to recover for worker {self.worker_id}")
+                return []
+
+            logger.info(f"📋 Found {len(job_usernames)} total jobs to recover")
+
+            recovered_jobs = []
+            expired_jobs = []
+            
+            for username in job_usernames:
+                try:
+                    job_key = f"monitoring_job:{username}"
+                    job_data_str = self.redis_client.hget(job_key, "job_data")
+                    
+                    if not job_data_str:
+                        logger.warning(f"Job data not found for {username}, cleaning up")
+                        expired_jobs.append(username)
+                        continue
+                    
+                    # Deserializar job desde JSON
+                    job_dict = json.loads(job_data_str)
+                    
+                    # Reconstruir MonitoringJob desde dict
+                    job = self._deserialize_monitoring_job(job_dict)
+                    
+                    # Validar que tenga al menos 1 subscriber activo
+                    if not job.has_active_subscribers():
+                        logger.warning(f"Job {username} has no active subscribers, skipping recovery")
+                        expired_jobs.append(username)
+                        continue
+                    
+                    # Verificar assignment (debe estar asignado a este worker)
+                    assigned_worker = self.redis_client.hget(self.MONITORING_ASSIGNMENT_KEY, username)
+                    if assigned_worker != self.worker_id:
+                        logger.warning(f"Job {username} assigned to {assigned_worker}, not {self.worker_id}, skipping")
+                        self.redis_client.srem(self.MONITORING_JOBS_KEY, username)
+                        continue
+                    
+                    recovered_jobs.append(job)
+                    logger.info(f"✅ Recovered job: {username} ({len(job.get_active_subscribers())} active subscribers)")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to recover job for {username}: {e}")
+                    expired_jobs.append(username)
+                    continue
+            
+            # Limpiar jobs expirados
+            if expired_jobs:
+                for username in expired_jobs:
+                    self.redis_client.srem(self.MONITORING_JOBS_KEY, username)
+                logger.info(f"🧹 Cleaned {len(expired_jobs)} expired jobs")
+            
+            logger.info(f"🎉 Recovery complete: {len(recovered_jobs)} jobs recovered")
+            return recovered_jobs
+            
+        except Exception as e:
+            logger.error(f"Failed to recover worker jobs: {e}")
+            return []
+
+    def _deserialize_monitoring_job(self, job_dict: dict) -> MonitoringJob:
+        """
+        Deserializa un MonitoringJob desde dict JSON
+        
+        Args:
+            job_dict: Diccionario con datos del job
+            
+        Returns:
+            MonitoringJob reconstruido
+        """
+        from services.monitoring_models import MonitoringSubscriber, SubscriberType
+        
+        # Convertir enums desde strings
+        job_dict["job_type"] = MonitoringJobType(job_dict["job_type"])
+        job_dict["status"] = MonitoringStatus(job_dict["status"])
+        
+        # Deserializar subscribers
+        subscribers = []
+        for sub_dict in job_dict.get("subscribers", []):
+            sub_dict["subscriber_type"] = SubscriberType(sub_dict["subscriber_type"])
+            subscriber = MonitoringSubscriber(**sub_dict)
+            subscribers.append(subscriber)
+        
+        job_dict["subscribers"] = subscribers
+        
+        # Crear MonitoringJob
+        return MonitoringJob(**job_dict)
 
     def send_recording_request(self, request: RecordingRequest) -> bool:
         """
@@ -402,7 +577,6 @@ class RedisQueueService:
 
             # 1. Store job data with hset (like bot)
             pipe.hset(job_key, mapping=job_data)
-            pipe.expire(job_key, 3600)  # 1 hour TTL
 
             # 2. Add to priority queue with zadd (NOT lpush!)
             pipe.zadd(queue_key, {job_id: request.created_at})

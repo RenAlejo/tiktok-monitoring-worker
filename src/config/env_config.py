@@ -42,7 +42,14 @@ class EnvConfig:
     # Worker Configuration
     @property
     def worker_id(self) -> str:
-        return self.get_str("MONITORING_WORKER_ID", f"monitoring_worker_{os.getpid()}")
+        worker_id = self.get_str("MONITORING_WORKER_ID", "")
+        if not worker_id:
+            raise ValueError(
+                "MONITORING_WORKER_ID is required in .env file.\n"
+                "Example: MONITORING_WORKER_ID=monitoring_worker_01\n"
+                "This ensures worker can recover jobs after restart."
+            )
+        return worker_id
 
     @property
     def worker_heartbeat_interval_seconds(self) -> int:

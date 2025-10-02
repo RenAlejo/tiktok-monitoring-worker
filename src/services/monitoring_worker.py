@@ -75,6 +75,38 @@ class MonitoringWorker:
             # Start Redis services
             self.redis_service.start_worker_services()
 
+
+            # RECOVERY: Recuperar jobs desde Redis
+            recovered_jobs = self.redis_service.recover_worker_jobs()
+            reactivated_count = 0
+
+            for job in recovered_jobs:
+                # Reactivar jobs pausados si cumplen condiciones
+                if job.status == MonitoringStatus.PAUSED:
+                    # Condición 1: Tiene suscriptores activos
+                    if not job.has_active_subscribers():
+                        logger.info(f"⏸️ Keeping PAUSED job {job.target_username} (no active subscribers)")
+                        self.state.add_job(job)
+                        continue
+
+                    # Condición 2: No hay grabación activa
+                    if self.redis_service.check_active_recording(job.target_username):
+                        logger.info(f"⏸️ Keeping PAUSED job {job.target_username} (active recording found)")
+                        self.state.add_job(job)
+                        continue
+
+                    # Safe to reactivate
+                    job.status = MonitoringStatus.ACTIVE
+                    reactivated_count += 1
+                    logger.info(f"🔄 Reactivated PAUSED job: {job.target_username}")
+
+                self.state.add_job(job)
+                # Persistir en Redis (refresh timestamps + status actualizado)
+                self.redis_service.store_monitoring_job(job)
+
+            if recovered_jobs:
+                logger.info(f"🔄 Recovered {len(recovered_jobs)} monitoring jobs from previous session ({reactivated_count} reactivated from PAUSED)")
+
             # Start monitoring loop
             self.is_running = True
             self.monitoring_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
