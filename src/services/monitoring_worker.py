@@ -122,6 +122,9 @@ class MonitoringWorker:
                     monitor_thread.start()
                     logger.info(f"🧵 Started independent thread for recovered job: {job.target_username}")
 
+                    # Delay entre inicios de threads para distribuir solicitudes iniciales
+                    time.sleep(2)
+
             # Start command listener
             self.command_listener_thread = threading.Thread(target=self._command_listener_loop, daemon=True)
             self.command_listener_thread.start()
