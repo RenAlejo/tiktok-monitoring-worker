@@ -168,8 +168,15 @@ class TikTokAPI:
                 'Origin': 'https://www.tiktok.com',
             }
 
+            # TODO: TEMPORARY DEBUG LOG - Remove after testing
+            api_client = self.http_client.get_api_client()
+            if api_client.proxy_manager:
+                current_proxy = api_client.proxy_manager.get_current_proxy()
+                if current_proxy:
+                    logger.info(f"🌐 [ROOM_ID REQUEST] User: {user} | Proxy: {current_proxy.host}:{current_proxy.port}")
+
             logger.debug(f"Requesting TikTok API for {user}: {url}")
-            response = self.http_client.get_api_client().get(url, params=params, headers=headers)
+            response = api_client.get(url, params=params, headers=headers)
 
             if response.status_code == 200:
                 data = response.json()
@@ -206,7 +213,14 @@ class TikTokAPI:
             # Esto evita descargar toda la página HTML
             url = f"{self.BASE_URL}/api/user/detail/?aid=1988&unique_id={user}"
 
-            response = self.http_client.get_api_client().get(
+            # TODO: TEMPORARY DEBUG LOG - Remove after testing
+            api_client = self.http_client.get_api_client()
+            if api_client.proxy_manager:
+                current_proxy = api_client.proxy_manager.get_current_proxy()
+                if current_proxy:
+                    logger.info(f"🌐 [FAST LANE] User: {user} | Proxy: {current_proxy.host}:{current_proxy.port}")
+
+            response = api_client.get(
                 url,
                 timeout=(config.http_connect_timeout, config.http_request_timeout)
             )
@@ -275,7 +289,14 @@ class TikTokAPI:
                 url = (f"{self.WEBCAST_URL}/webcast/room/check_alive/"
                        f"?aid=1988&region=CH&room_ids={room_id}&user_is_login=true")
 
-                response = self.http_client.get_api_client().get(url)
+                # TODO: TEMPORARY DEBUG LOG - Remove after testing
+                api_client = self.http_client.get_api_client()
+                if api_client.proxy_manager:
+                    current_proxy = api_client.proxy_manager.get_current_proxy()
+                    if current_proxy:
+                        logger.info(f"🌐 [ROOM_ALIVE CHECK] Room: {room_id} | Proxy: {current_proxy.host}:{current_proxy.port}")
+
+                response = api_client.get(url)
 
                 # Verificar respuesta WAF
                 if 'Please wait...' in response.text:

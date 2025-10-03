@@ -34,7 +34,8 @@ class MonitoringWorker:
         self.command_handler = WorkerCommandHandler(self)
 
         # Threading
-        self.monitoring_thread = None
+        self.monitoring_threads: Dict[str, threading.Thread] = {}  # Per-job threads
+        self.monitoring_threads_lock = threading.Lock()
         self.command_listener_thread = None
         self.is_running = False
         self.shutdown_event = threading.Event()
@@ -107,10 +108,19 @@ class MonitoringWorker:
             if recovered_jobs:
                 logger.info(f"🔄 Recovered {len(recovered_jobs)} monitoring jobs from previous session ({reactivated_count} reactivated from PAUSED)")
 
-            # Start monitoring loop
+            # Start independent monitoring threads for each recovered job
             self.is_running = True
-            self.monitoring_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
-            self.monitoring_thread.start()
+            with self.monitoring_threads_lock:
+                for job in recovered_jobs:
+                    monitor_thread = threading.Thread(
+                        target=self._job_monitoring_loop,
+                        args=(job,),
+                        daemon=True,
+                        name=f"monitor_{job.target_username}"
+                    )
+                    self.monitoring_threads[job.target_username] = monitor_thread
+                    monitor_thread.start()
+                    logger.info(f"🧵 Started independent thread for recovered job: {job.target_username}")
 
             # Start command listener
             self.command_listener_thread = threading.Thread(target=self._command_listener_loop, daemon=True)
@@ -137,10 +147,20 @@ class MonitoringWorker:
         self.is_running = False
         self.shutdown_event.set()
 
-        # Wait for threads to finish
-        if self.monitoring_thread and self.monitoring_thread.is_alive():
-            self.monitoring_thread.join(timeout=10)
+        # Wait for all monitoring threads to finish
+        with self.monitoring_threads_lock:
+            active_threads = list(self.monitoring_threads.items())
 
+        if active_threads:
+            logger.info(f"Waiting for {len(active_threads)} monitoring threads to stop...")
+            for username, thread in active_threads:
+                if thread.is_alive():
+                    logger.debug(f"Waiting for thread {username}...")
+                    thread.join(timeout=10)
+                    if thread.is_alive():
+                        logger.warning(f"⚠️  Thread {username} did not stop gracefully")
+
+        # Wait for command listener thread
         if self.command_listener_thread and self.command_listener_thread.is_alive():
             self.command_listener_thread.join(timeout=5)
 
@@ -202,6 +222,18 @@ class MonitoringWorker:
                 # Store in Redis
                 self.redis_service.store_monitoring_job(job)
 
+                # Start independent monitoring thread for this job
+                with self.monitoring_threads_lock:
+                    monitor_thread = threading.Thread(
+                        target=self._job_monitoring_loop,
+                        args=(job,),
+                        daemon=True,
+                        name=f"monitor_{target_username}"
+                    )
+                    self.monitoring_threads[target_username] = monitor_thread
+                    monitor_thread.start()
+                    logger.info(f"🧵 Started independent thread for {target_username}")
+
                 logger.info(f"Created new monitoring job for {target_username}")
 
             # Update job count in Redis
@@ -230,11 +262,26 @@ class MonitoringWorker:
             if not job.has_active_subscribers():
                 logger.info(f"No active subscribers, removing monitoring job for {target_username}")
 
-                # Remove from local state
+                # Remove from local state (this will cause thread to stop on next iteration)
                 self.state.remove_job(target_username)
 
                 # Remove from Redis
                 self.redis_service.remove_monitoring_job(target_username)
+
+                # Stop monitoring thread gracefully
+                with self.monitoring_threads_lock:
+                    thread = self.monitoring_threads.get(target_username)
+                    if thread and thread.is_alive():
+                        logger.info(f"🛑 Waiting for monitoring thread to stop for {target_username}")
+                        # Thread will stop on its own when it detects job is no longer in state
+                        thread.join(timeout=10)
+                        if thread.is_alive():
+                            logger.warning(f"⚠️  Monitoring thread for {target_username} did not stop gracefully")
+
+                    # Remove from thread dict
+                    if target_username in self.monitoring_threads:
+                        del self.monitoring_threads[target_username]
+                        logger.info(f"🗑️  Removed thread for {target_username}")
             else:
                 # Update job in Redis
                 self.redis_service.store_monitoring_job(job)
@@ -247,46 +294,6 @@ class MonitoringWorker:
         except Exception as e:
             logger.error(f"Failed to remove monitoring job for {target_username}: {e}")
             return False
-
-    def _monitoring_loop(self):
-        """Loop principal de monitoreo"""
-        logger.info("Starting monitoring loop")
-
-        while self.is_running and not self.shutdown_event.is_set():
-            try:
-                cycle_start = time.time()
-
-                # Process all active monitoring jobs
-                jobs_to_process = list(self.state.active_jobs.values())
-
-                if jobs_to_process:
-                    logger.debug(f"Processing {len(jobs_to_process)} monitoring jobs")
-
-                    for job in jobs_to_process:
-                        if self.shutdown_event.is_set():
-                            break
-
-                        self._process_monitoring_job(job)
-
-                # Update statistics
-                cycle_duration = time.time() - cycle_start
-                self.stats["total_monitoring_cycles"] += 1
-                self.stats["last_cycle_duration"] = cycle_duration
-
-                # Update heartbeat
-                self.state.update_heartbeat()
-
-                # Sleep for monitoring interval (or until shutdown)
-                self.shutdown_event.wait(timeout=config.monitoring_interval_seconds)
-
-            except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
-                self.stats["total_errors"] += 1
-
-                # Wait a bit before retrying
-                self.shutdown_event.wait(timeout=5)
-
-        logger.info("Monitoring loop ended")
 
     def _command_listener_loop(self):
         """Loop para escuchar comandos desde el bot"""
@@ -305,6 +312,47 @@ class MonitoringWorker:
                 self.shutdown_event.wait(timeout=1)
 
         logger.info("Command listener loop ended")
+
+    def _job_monitoring_loop(self, job: MonitoringJob):
+        """
+        Loop de monitoreo independiente para un único job.
+        Cada job tiene su propio hilo que valida cada live_check_interval_seconds.
+        """
+        logger.info(f"🧵 Starting independent monitoring thread for {job.target_username}")
+
+        while self.is_running and not self.shutdown_event.is_set():
+            try:
+                # Check if job still exists in state (could be removed)
+                if not self.state.has_job(job.target_username):
+                    logger.info(f"🛑 Job {job.target_username} no longer in state, stopping thread")
+                    break
+
+                # Get fresh job reference from state
+                current_job = self.state.get_job(job.target_username)
+                if not current_job:
+                    break
+
+                # SKIP paused jobs (waiting for recording to complete)
+                if current_job.status == MonitoringStatus.PAUSED:
+                    logger.debug(f"⏸️  Job {job.target_username} is PAUSED, waiting...")
+                    self.shutdown_event.wait(timeout=10)  # Check again in 10s
+                    continue
+
+                # Process monitoring job (check live status, send notifications, etc.)
+                self._process_monitoring_job(current_job)
+
+                # Update heartbeat periodically
+                self.state.update_heartbeat()
+
+                # Wait for next check interval (or until shutdown)
+                self.shutdown_event.wait(timeout=current_job.live_check_interval_seconds)
+
+            except Exception as e:
+                logger.error(f"Error in monitoring loop for {job.target_username}: {e}")
+                # Wait a bit before retrying
+                self.shutdown_event.wait(timeout=5)
+
+        logger.info(f"🛑 Monitoring thread ended for {job.target_username}")
 
     def _process_command_message(self, message):
         """Procesa mensaje de comando recibido"""

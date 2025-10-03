@@ -91,7 +91,10 @@ class ProxyManager:
             self.proxies.append(proxy)
 
     def get_current_proxy(self) -> Optional[ProxyInfo]:
-        """Obtiene el proxy actual con rotación automática por tiempo"""
+        """
+        Obtiene el proxy actual con rotación automática por tiempo y puerto aleatorio.
+        Cada llamada genera un puerto aleatorio entre 10000-60000 para acceder a 50K IPs diferentes.
+        """
         if not self.proxies:
             return None
 
@@ -113,7 +116,28 @@ class ProxyManager:
 
             if self.current_proxy_index >= len(self.proxies):
                 self.current_proxy_index = 0
-            return self.proxies[self.current_proxy_index]
+
+            # Get base proxy configuration
+            base_proxy = self.proxies[self.current_proxy_index]
+
+            # Generate random port for IP rotation (10000-60000 = 50K different IPs)
+            random_port = random.randint(10000, 60000)
+
+            # TODO: TEMPORARY DEBUG LOG - Remove after testing
+            logger.info(f"🔀 Generated random proxy port: {base_proxy.host}:{random_port} (from 50K IP pool)")
+
+            # Create new ProxyInfo with random port
+            return ProxyInfo(
+                host=base_proxy.host,
+                port=random_port,
+                username=base_proxy.username,
+                password=base_proxy.password,
+                status=base_proxy.status,
+                last_used=current_time,
+                error_count=base_proxy.error_count,
+                success_count=base_proxy.success_count,
+                response_time=base_proxy.response_time
+            )
 
     def mark_proxy_success(self, proxy: ProxyInfo, response_time: float):
         """Marca un proxy como exitoso"""
