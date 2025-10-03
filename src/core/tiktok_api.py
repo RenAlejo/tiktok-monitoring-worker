@@ -168,7 +168,6 @@ class TikTokAPI:
                 'Origin': 'https://www.tiktok.com',
             }
 
-            # TODO: TEMPORARY DEBUG LOG - Remove after testing
             api_client = self.http_client.get_api_client()
             if api_client.proxy_manager:
                 current_proxy = api_client.proxy_manager.get_current_proxy()
@@ -213,7 +212,6 @@ class TikTokAPI:
             # Esto evita descargar toda la página HTML
             url = f"{self.BASE_URL}/api/user/detail/?aid=1988&unique_id={user}"
 
-            # TODO: TEMPORARY DEBUG LOG - Remove after testing
             api_client = self.http_client.get_api_client()
             if api_client.proxy_manager:
                 current_proxy = api_client.proxy_manager.get_current_proxy()
@@ -289,7 +287,6 @@ class TikTokAPI:
                 url = (f"{self.WEBCAST_URL}/webcast/room/check_alive/"
                        f"?aid=1988&region=CH&room_ids={room_id}&user_is_login=true")
 
-                # TODO: TEMPORARY DEBUG LOG - Remove after testing
                 api_client = self.http_client.get_api_client()
                 if api_client.proxy_manager:
                     current_proxy = api_client.proxy_manager.get_current_proxy()

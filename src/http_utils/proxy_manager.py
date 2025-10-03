@@ -122,8 +122,6 @@ class ProxyManager:
 
             # Generate random port for IP rotation (10000-60000 = 50K different IPs)
             random_port = random.randint(10000, 60000)
-
-            # TODO: TEMPORARY DEBUG LOG - Remove after testing
             logger.info(f"🔀 Generated random proxy port: {base_proxy.host}:{random_port} (from 50K IP pool)")
 
             # Create new ProxyInfo with random port
