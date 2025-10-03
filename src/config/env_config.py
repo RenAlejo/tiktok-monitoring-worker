@@ -123,6 +123,14 @@ class EnvConfig:
         return self.get_int("PROXY_ROTATION_INTERVAL_MINUTES", 5)
 
     @property
+    def proxy_port_min(self) -> int:
+        return self.get_int("PROXY_PORT_MIN", 10000)
+
+    @property
+    def proxy_port_max(self) -> int:
+        return self.get_int("PROXY_PORT_MAX", 60000)
+
+    @property
     def enable_fallback_api(self) -> bool:
         return self.get_bool("ENABLE_FALLBACK_API", True)
 

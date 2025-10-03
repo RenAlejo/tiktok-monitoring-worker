@@ -120,9 +120,10 @@ class ProxyManager:
             # Get base proxy configuration
             base_proxy = self.proxies[self.current_proxy_index]
 
-            # Generate random port for IP rotation (10000-60000 = 50K different IPs)
-            random_port = random.randint(10000, 60000)
-            logger.info(f"🔀 Generated random proxy port: {base_proxy.host}:{random_port} (from 50K IP pool)")
+            # Generate random port for IP rotation using configured range
+            random_port = random.randint(config.proxy_port_min, config.proxy_port_max)
+            ip_pool_size = config.proxy_port_max - config.proxy_port_min
+            logger.info(f"🔀 Generated random proxy port: {base_proxy.host}:{random_port} (from {ip_pool_size} IP pool)")
 
             # Create new ProxyInfo with random port
             return ProxyInfo(
