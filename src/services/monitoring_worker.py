@@ -203,6 +203,14 @@ class MonitoringWorker:
             if self.state.has_job(target_username):
                 existing_job = self.state.get_job(target_username)
                 existing_job.add_subscriber(subscriber)
+
+                # Update job in Redis
+                self.redis_service.store_monitoring_job(existing_job)
+
+                # Update user monitoring index for fast lookups
+                index_key = f"user_monitorings:{subscriber.user_id}"
+                self.redis_service.redis.sadd(index_key, target_username)
+
                 logger.info(f"Added subscriber to existing monitoring job for {target_username}")
             else:
                 # Create new monitoring job
@@ -224,6 +232,10 @@ class MonitoringWorker:
 
                 # Store in Redis
                 self.redis_service.store_monitoring_job(job)
+
+                # Update user monitoring index for fast lookups
+                index_key = f"user_monitorings:{subscriber.user_id}"
+                self.redis_service.redis.sadd(index_key, target_username)
 
                 # Start independent monitoring thread for this job
                 with self.monitoring_threads_lock:
@@ -260,6 +272,13 @@ class MonitoringWorker:
 
             # Remove subscriber
             job.remove_subscriber(subscriber_id, subscriber_type)
+
+            # Remove from user monitoring index
+            # Extract user_id from subscriber_id (format: "user_{user_id}" or just the user_id)
+            user_id = subscriber_id.replace("user_", "") if subscriber_id.startswith("user_") else subscriber_id
+            index_key = f"user_monitorings:{user_id}"
+            self.redis_service.redis.srem(index_key, target_username)
+            logger.debug(f"Removed {target_username} from monitoring index for user {user_id}")
 
             # If no active subscribers, remove entire job
             if not job.has_active_subscribers():
