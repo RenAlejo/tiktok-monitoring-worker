@@ -209,7 +209,7 @@ class MonitoringWorker:
 
                 # Update user monitoring index for fast lookups
                 index_key = f"user_monitorings:{subscriber.user_id}"
-                self.redis_service.redis.sadd(index_key, target_username)
+                self.redis_service.redis_client.sadd(index_key, target_username)
 
                 logger.info(f"Added subscriber to existing monitoring job for {target_username}")
             else:
@@ -235,7 +235,7 @@ class MonitoringWorker:
 
                 # Update user monitoring index for fast lookups
                 index_key = f"user_monitorings:{subscriber.user_id}"
-                self.redis_service.redis.sadd(index_key, target_username)
+                self.redis_service.redis_client.sadd(index_key, target_username)
 
                 # Start independent monitoring thread for this job
                 with self.monitoring_threads_lock:
@@ -277,7 +277,7 @@ class MonitoringWorker:
             # Extract user_id from subscriber_id (format: "user_{user_id}" or just the user_id)
             user_id = subscriber_id.replace("user_", "") if subscriber_id.startswith("user_") else subscriber_id
             index_key = f"user_monitorings:{user_id}"
-            self.redis_service.redis.srem(index_key, target_username)
+            self.redis_service.redis_client.srem(index_key, target_username)
             logger.debug(f"Removed {target_username} from monitoring index for user {user_id}")
 
             # If no active subscribers, remove entire job
