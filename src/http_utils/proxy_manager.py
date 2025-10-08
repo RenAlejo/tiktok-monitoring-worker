@@ -92,51 +92,79 @@ class ProxyManager:
 
     def get_current_proxy(self) -> Optional[ProxyInfo]:
         """
-        Obtiene el proxy actual con rotación automática por tiempo y puerto aleatorio.
-        Cada llamada genera un puerto aleatorio entre 10000-60000 para acceder a 50K IPs diferentes.
+        Obtiene el proxy actual.
+
+        Modos:
+        - Rotación automática (USE_SINGLE_ROTATING_PROXY=True): Usa configuración .env directa
+        - Multi-puerto (False): Usa sistema antiguo con puertos aleatorios
         """
-        if not self.proxies:
-            return None
-
         with self.rotation_lock:
-            # Check if it's time to auto-rotate
             current_time = time.time()
-            time_since_rotation = current_time - self.last_rotation
 
-            if time_since_rotation >= self.rotation_interval:
-                elapsed_minutes = time_since_rotation / 60
-                logger.info(f"⏰ Auto-rotating proxy after {elapsed_minutes:.1f} minutes")
+            # MODO 1: Proxy con rotación automática (nuevo)
+            if config.use_single_rotating_proxy:
+                # Validar configuración
+                if not config.proxy_host or not config.proxy_port:
+                    logger.error("❌ USE_SINGLE_ROTATING_PROXY enabled but PROXY_HOST/PROXY_PORT not configured")
+                    return None
 
-                # Rotate inline (already have lock, don't call _rotate_to_next)
-                old_index = self.current_proxy_index
-                self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
-                logger.info(f"🔄 Proxy rotated: #{old_index} → #{self.current_proxy_index} (total: {len(self.proxies)})")
+                logger.debug(f"🔀 Using single rotating proxy: {config.proxy_host}:{config.proxy_port}")
 
-                self.last_rotation = current_time
+                return ProxyInfo(
+                    host=config.proxy_host,
+                    port=config.proxy_port,
+                    username=config.proxy_username if config.proxy_username else None,
+                    password=config.proxy_password if config.proxy_password else None,
+                    status=ProxyStatus.ACTIVE,
+                    last_used=current_time,
+                    error_count=0,
+                    success_count=0,
+                    response_time=0
+                )
 
-            if self.current_proxy_index >= len(self.proxies):
-                self.current_proxy_index = 0
+            # MODO 2: Multi-puerto con rotación manual (antiguo - mantener compatibilidad)
+            else:
+                if not self.proxies:
+                    logger.warning("No proxies configured for multi-port mode")
+                    return None
 
-            # Get base proxy configuration
-            base_proxy = self.proxies[self.current_proxy_index]
+                # Auto-rotate based on time interval
+                time_since_rotation = current_time - self.last_rotation
 
-            # Generate random port for IP rotation using configured range
-            random_port = random.randint(config.proxy_port_min, config.proxy_port_max)
-            ip_pool_size = config.proxy_port_max - config.proxy_port_min
-            logger.info(f"🔀 Generated random proxy port: {base_proxy.host}:{random_port} (from {ip_pool_size} IP pool)")
+                if time_since_rotation >= self.rotation_interval:
+                    elapsed_minutes = time_since_rotation / 60
+                    logger.info(f"⏰ Auto-rotating proxy after {elapsed_minutes:.1f} minutes")
 
-            # Create new ProxyInfo with random port
-            return ProxyInfo(
-                host=base_proxy.host,
-                port=random_port,
-                username=base_proxy.username,
-                password=base_proxy.password,
-                status=base_proxy.status,
-                last_used=current_time,
-                error_count=base_proxy.error_count,
-                success_count=base_proxy.success_count,
-                response_time=base_proxy.response_time
-            )
+                    # Rotate inline (already have lock, don't call _rotate_to_next)
+                    old_index = self.current_proxy_index
+                    self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
+                    logger.info(f"🔄 Proxy rotated: #{old_index} → #{self.current_proxy_index} (total: {len(self.proxies)})")
+
+                    self.last_rotation = current_time
+
+                if self.current_proxy_index >= len(self.proxies):
+                    self.current_proxy_index = 0
+
+                # Get base proxy configuration
+                base_proxy = self.proxies[self.current_proxy_index]
+
+                # Generate random port for IP rotation using configured range
+                random_port = random.randint(config.proxy_port_min, config.proxy_port_max)
+                ip_pool_size = config.proxy_port_max - config.proxy_port_min
+                logger.info(f"🔀 Generated random proxy port: {base_proxy.host}:{random_port} (from {ip_pool_size} IP pool)")
+
+                # Create new ProxyInfo with random port
+                return ProxyInfo(
+                    host=base_proxy.host,
+                    port=random_port,
+                    username=base_proxy.username,
+                    password=base_proxy.password,
+                    status=base_proxy.status,
+                    last_used=current_time,
+                    error_count=base_proxy.error_count,
+                    success_count=base_proxy.success_count,
+                    response_time=base_proxy.response_time
+                )
 
     def mark_proxy_success(self, proxy: ProxyInfo, response_time: float):
         """Marca un proxy como exitoso"""

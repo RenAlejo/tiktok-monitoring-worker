@@ -122,6 +122,7 @@ class EnvConfig:
     def proxy_rotation_interval_minutes(self) -> int:
         return self.get_int("PROXY_ROTATION_INTERVAL_MINUTES", 5)
 
+    # Multi-port proxy configuration (legacy system)
     @property
     def proxy_port_min(self) -> int:
         return self.get_int("PROXY_PORT_MIN", 10000)
@@ -129,6 +130,28 @@ class EnvConfig:
     @property
     def proxy_port_max(self) -> int:
         return self.get_int("PROXY_PORT_MAX", 60000)
+
+    # Single rotating proxy configuration (new system)
+    @property
+    def use_single_rotating_proxy(self) -> bool:
+        """If enabled, uses single proxy with automatic IP rotation instead of multi-port"""
+        return self.get_bool("USE_SINGLE_ROTATING_PROXY", False)
+
+    @property
+    def proxy_host(self) -> str:
+        return self.get_str("PROXY_HOST", "")
+
+    @property
+    def proxy_port(self) -> int:
+        return self.get_int("PROXY_PORT", 0)
+
+    @property
+    def proxy_username(self) -> str:
+        return self.get_str("PROXY_USERNAME", "")
+
+    @property
+    def proxy_password(self) -> str:
+        return self.get_str("PROXY_PASSWORD", "")
 
     @property
     def enable_fallback_api(self) -> bool:
