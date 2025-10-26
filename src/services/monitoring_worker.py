@@ -489,7 +489,6 @@ class MonitoringWorker:
 
         if room_id:
             self._room_id_cache[username] = (room_id, time.time())
-            logger.info(f"💾 Cached room_id for {username}: {room_id} (TTL: {config.room_id_cache_ttl_minutes}min)")
 
         return room_id
 

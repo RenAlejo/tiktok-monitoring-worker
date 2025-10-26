@@ -187,7 +187,6 @@ class TikTokAPI:
                     data['data']['user'].get('roomId')):
 
                     room_id = data['data']['user']['roomId']
-                    logger.info(f"✅ TikTok API successful for {user}: {room_id}")
                     return room_id
                 else:
                     logger.debug(f"TikTok API: No room_id found in response for {user}")
