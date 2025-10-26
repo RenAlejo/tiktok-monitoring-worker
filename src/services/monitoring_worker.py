@@ -482,7 +482,7 @@ class MonitoringWorker:
                 logger.debug(f"✓ Using cached room_id for {username} (age: {int(age_seconds)}s / {config.room_id_cache_ttl_minutes}min)")
                 return room_id
             else:
-                logger.info(f"⏰ Cache expired for {username} (age: {int(age_seconds)}s), fetching fresh room_id")
+                logger.debug(f"⏰ Cache expired for {username} (age: {int(age_seconds)}s), fetching fresh room_id")
 
         # Cache miss or expired - fetch from TikTok API
         room_id = self.tiktok_api._get_room_id_from_api(username)
