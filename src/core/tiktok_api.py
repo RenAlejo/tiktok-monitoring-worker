@@ -290,7 +290,7 @@ class TikTokAPI:
                 if api_client.proxy_manager:
                     current_proxy = api_client.proxy_manager.get_current_proxy()
                     if current_proxy:
-                        logger.info(f"🌐 [ROOM_ALIVE CHECK] Room: {room_id} | Proxy: {current_proxy.host}:{current_proxy.port}")
+                        logger.debug(f"🌐 [ROOM_ALIVE CHECK] Room: {room_id} | Proxy: {current_proxy.host}:{current_proxy.port}")
 
                 response = api_client.get(url)
 
