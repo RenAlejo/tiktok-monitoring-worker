@@ -200,6 +200,12 @@ class WorkerCommandHandler:
             # Add subscriber to existing job
             job.add_subscriber(subscriber)
 
+            # Add to user monitoring index (mantiene SET sincronizado)
+            user_id = subscriber.user_id
+            index_key = f"user_monitorings:{user_id}"
+            self.worker.redis_service.redis_client.sadd(index_key, target_username)
+            logger.debug(f"Added {target_username} to monitoring index for user {user_id}")
+
             # If job was PAUSED, RESUME it now that we have a subscriber
             was_paused = job.status == MonitoringStatus.PAUSED
             if was_paused:
@@ -260,6 +266,12 @@ class WorkerCommandHandler:
 
             # Remove subscriber
             job.remove_subscriber(subscriber_id, subscriber_type)
+
+            # Remove from user monitoring index
+            user_id = subscriber_id.replace("user_", "") if subscriber_id.startswith("user_") else subscriber_id
+            index_key = f"user_monitorings:{user_id}"
+            self.worker.redis_service.redis_client.srem(index_key, target_username)
+            logger.debug(f"Removed {target_username} from monitoring index for user {user_id}")
 
             # If no active subscribers, PAUSE job instead of deleting it
             if not job.has_active_subscribers():
