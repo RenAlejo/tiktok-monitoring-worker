@@ -206,11 +206,19 @@ class WorkerCommandHandler:
             self.worker.redis_service.redis_client.sadd(index_key, target_username)
             logger.debug(f"Added {target_username} to monitoring index for user {user_id}")
 
-            # If job was PAUSED, RESUME it now that we have a subscriber
+            # If job was PAUSED, check if we should RESUME it
             was_paused = job.status == MonitoringStatus.PAUSED
             if was_paused:
-                job.status = MonitoringStatus.ACTIVE
-                logger.info(f"▶️  Monitoring RESUMED for {target_username} - new subscriber joined")
+                # Verificar si el job está pausado por una grabación activa
+                # Si last_known_live_status=True, significa que está en live
+                # y el job fue pausado por grabación activa → NO reactivar
+                if job.last_known_live_status:
+                    logger.info(f"⏸️  Job {target_username} remains PAUSED - recording in progress (added subscriber will receive copy)")
+                    # NO cambiar status - debe seguir pausado durante la grabación
+                else:
+                    # Job pausado por falta de suscriptores (no por grabación)
+                    job.status = MonitoringStatus.ACTIVE
+                    logger.info(f"▶️  Monitoring RESUMED for {target_username} - new subscriber joined (no active recording)")
 
             # Update job in Redis
             self.worker.redis_service.store_monitoring_job(job)
